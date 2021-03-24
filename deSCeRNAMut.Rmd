@@ -1,0 +1,177 @@
+---
+title: "de Novo Mutation Calling from scRNA seq Data"
+author: "Thomas Mitchell"
+date: "19/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(echo = FALSE, root.dir="~/renal/main/Results/scRNA/mutCalling")
+library(ggvenn)
+library(seqinr)
+```
+
+
+
+## Background
+The accurate detection of mutations within single cells from their transcriptomic sequences enables the inference of their clonal relationships. In cancerous tissues, reconstructing the clonal evolution of tumour cells is well established, principally through the genomic sequencing of relatively large numbers of cells. Lineage tracing of single lymphocytes has more recently become routine through 5' sequencing and enrichment of the T and B cell receptors. Determining the clonality of lymphocytes has enabled researchers to infer the degree of clonal expansion (thought principally via neo-epitope antigenic stimulation), and to study how cells mature from naivety through to exhaustion. 
+
+Methods such as [Souporcell](https://doi.org/10.1038/s41592-020-0820-1) have been developed to genotype single cells from their transcriptomic readouts. Other methods, such as [mgatk](https://doi.org/10.1038/s41587-020-0645-6) have demonstrated the ability to clonally trace single cells through using scATAC-seq and mtDNA mutations.
+
+This methodolgy, which we have termed **deSCeRNAMut** (de novo Single Cell RNA Mutation), aims to accurately detect mutations present in different cell populations within a mixed cellular environment from droplet based single cell RNA sequencing data. The principal challenge is the lack of consistent coverage, and low depth of reads, alongside error-prone sequencing reads. To abrogate these challenges, this method relies upon the vast numbers of cells that can be sequenced through droplet based technologies, and the implausibility of shared post-embryonic mutations between different cell-type lineages. 
+
+
+## Method
+To test the method, we use transcriptomes generated using droplet based sequencing from *Stromal and tumour cell evolution in clear cell renal cell carcinoma*. The dataset provides a detailed insight into cellular heterogneity in 12 kidney tumours through multi-regional sequencing, with a large number of cells sequenced across different primary cell lineages.
+
+```{r table of lineages, echo=F, warning=F}
+files <- list.files("../GEX/",pattern="anno", full.names = T)
+allCalls <- read.delim("scRNAmutaAllPts.txt")
+anno <- NULL
+for (file in files) {
+  anno <- rbind(anno, data.frame(read.csv(file, row.names = 1), "lineage"=sub("../GEX/","",sub("-anno.csv","",file))))
+}
+knitr::kable(table(anno$patient, anno$lineage), caption = "Numbers of cells per lineage and patient")
+```
+
+
+This page describes an overview for detecting and filtering putative somatic mutations from the above cells. We then benchmark the tumour cell calls by comparison to whole exome sequencing, and T cell calls by comparison to whether they are restricted to acquisition post-thymic selection to specific TCR clonotypes.
+
+
+### Initial variant calling
+In order to call cell specific mutations, indexed BAM files from the cellranger pipeline were fist split into cell specific BAM files. We borrowed this  [code](https://gist.github.com/winni2k) for the task. Cell specific BAM files were indexed using samtools.
+
+Mutations were initially called using bcftools mpileup. The choice of mutation caller was primarily influenced by the need for high sensitivity calls of variants with few supporting reads, as demonstrated by this useful systematic comparison of single-nucleotide variant callers ([Liu et al](https://doi.org/10.1186/s13059-019-1863-4)).
+
+Unsurprisingly, a huge number of mutations were called - with between 800,000 and 4,000,000 mutations called per patient. To facilitate more efficient downstream filtering of putative mutations, we perform the first filter step at this point:
+
+* Remove singlet variants only called in a single cell. The rationale is that is will be exceptionally difficult to accurately determine whether these mutations are real or artifact.  
+* Removal of variants that are shared between the different cell lineages shown in the table above. The vast majority of somatic mutations are acquired post embryonic differentiation, and therefore any true degree of sharing is implausible.
+
+After these steps, we are left with between 40,000 and 300,000 mutations per patient
+
+So far, we have generated a list of putative variant sites, but we are unaware how many variants may have been missed at each loci, and we have no information regarding reference calls at those loci. We therefore run [alleleCount](https://github.com/cancerit/alleleCount) to generate count tables of each base for all cells at every putative patient-specific loci.
+
+The code used to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/FindVariants.txt)
+
+### Collation and annotation of counts
+Reference and variant counts were collated for all of the loci called above to create a sparse matrix of counts for cell derived from every patient. In the absence of copy number variants, if an autosomal chromosome posses a true mutation, one expects an approximately equal number of reference and variant calls. The exception is for genes that exhibit a high degree of allelic specific expression, or that typically transcribe a particular allele in concentrated bursts. Alternatively, a high ratio of reference to variant counts in a cell base may imply artifact associated with high depth sequencing/ poorly mapped regions. A binomial filter (**p**<0.05) is therefore applied in each cell, with calls ignored in future analyses if there are significantly higher reference than variant counts.
+
+Each genomic loci is annotated using [ANNOVAR](https://annovar.openbioinformatics.org/en/latest/), the trinucleotide context of the variant, and any loci associated with previously documented RNA editing sites using [DARNED](https://darned.ucc.ie/) and [RADAR](https://github.com/YangLab/RADAR).
+
+The number of cells containing either the reference and variant base are collated for:
+
+* The cell lineage with the greatest number of mutations
+* All of the other cell lineages
+* The TCR clonotype with the greatest number of mutations
+* All other TCR clonotypes
+
+The Fisher's exact test is used to compute whether there are proportionally greater numbers of mutations in the cell lineage/ clonotype with the greatest number of mutations:
+
+```{r Fishers contingency, echo=F, warning=F}
+mat1 = matrix(allCalls[6,7:10], nrow=2, byrow = T, dimnames=list(c("Alternative base", "Reference base"), c("Number of CD8 T cells", "Number of other cell types")))
+mat2 = matrix(allCalls[6,13:16], nrow=2, byrow = T, dimnames=list(c("Alternative base", "Reference base"), c("Number of cells with TRA:CAVTGGGADGLTF;TRB:CASSQGGGGADTQYF CDR3", "Number of cells with other CDR3")))
+knitr::kable(mat1, caption = "Contingency table of counts for single mutation by broad cell lineage")
+knitr::kable(mat2, caption = "Contingency table of counts for single mutation by clonotype")
+```
+
+An enrichment factor is also calculated for each mutation that represents the multiple of the increased prevalence in the predominant cell type compared to all others. The output table looks as such:
+
+```{r All muts table, echo=F, warning=F}
+knitr::kable(head(allCalls), caption = "Top of mutation calls (examples above are the bottom line)")
+```
+
+The code to run the above steps has been archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/collateCounts.txt)
+
+### Final filter
+We apply the following thresholds to filter all possible mutations
+
+* Fisher's exact significance of enrichment by cell lineage, *p* < 0.0001 with proportionally at least 5 times greater mutations in the most enriched lineage.
+* Absence of any known single nucleotide polymorphisms from either ExAC or dbSNP.
+* No shared mutations between patients
+* Adequate coverage with at least 5 cells with variant base from the mutated cell lineage and at least 20 cells with reference base from the reference population
+
+The discriminatory power of the above metrics in reducing mutational calls is examined through a Venn diagram. Unsurprisingly, the cell lineage enrichment metrics provide the strongest power in curating the dataset.
+
+```{r Venn, echo=F, warning=F, fig.cap="\\label{fig:figs} Venn diagram demonstrating the discriminatory power of the above filtering metrics"}
+enrichp <- allCalls$pValT < 0.0001
+enrichn <- allCalls$enrich > 5 & !is.na(allCalls$enrich)
+exac <- allCalls$ExAC_ALL %in% "." & allCalls$avsnp147 %in% "."
+dupl <- !(duplicated(paste(allCalls$chr, allCalls$pos)) | duplicated(paste(allCalls$chr, allCalls$pos), fromLast=T))
+refC <- allCalls$refTO>20 & allCalls$mutTP>5
+venn <- list("cellType"=which(enrichp & enrichn), "SNP"=which(exac), "donorShared"=which(dupl), "coverage"=which(refC))
+ggvenn(venn, fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"), stroke_size = 0.5, set_name_size = 4)
+filt <- allCalls[enrichp & enrichn  & exac & dupl & refC,]
+```
+
+We can also examine the trinucleotide context of the mutations pre- and post-filtering.
+
+```{r TN initial filter, echo=F, warning=F, fig.width=12, fig.cap="\\label{fig:figs} Trinucleotide context of called mutations pre- and post- filtering"}
+bases <- c("A", "C", "G", "T")
+mutlist = paste0(rep(rep(bases, times=6), each=4),
+                 rep(c("C", "T"), each=48),
+                 rep(bases, times=24),">",rep(rep(bases, times=6), each=4),
+                 rep(c("A", "G","T","A","C","G"), each=16),
+                 rep(bases, times=24))
+oppstrand = function(x) {
+  trin1 = paste(comp(rev(strsplit(substr(x,1,3),"")[[1]]), forceToLower=F), collapse="")
+  trin2 = paste(comp(rev(strsplit(substr(x,5,7),"")[[1]]), forceToLower=F), collapse="")
+  return(sprintf("%s>%s",trin1,trin2))
+}
+mutlist_oppstrand = sapply(mutlist, oppstrand)
+muttype = rep(1:96,2)
+names(muttype) = c(mutlist,mutlist_oppstrand)
+
+layout(matrix(1:2, ncol=1))
+par(mar = c(5,6,1,1))
+tab <-  table(factor(allCalls$channel, levels=1:96))
+names(tab) <- mutlist
+cols <- rep(c("blue", "black", "red", "grey", "green", "pink"), each=16)
+barplot(tab, col=cols, ylab="No. of mutations", names.arg=names(tab), xlab="", las=2, cex.names=.5,
+	main=paste0("Pre-filtering, n=", sum(tab)))
+
+tab1 <-  table(factor(filt$channel, levels=1:96))
+names(tab1) <- mutlist
+barplot(tab1, col=cols, ylab="No. of mutations", names.arg=names(tab1), xlab="", las=2, cex.names=.5,
+	main=paste0("Post-filtering, n=", sum(tab1)))
+```
+
+Note is made of high levels of mutations that are otherwise unexplained from published catalogues of [mutational signatures](https://cancer.sanger.ac.uk/cosmic/signatures/SBS/index.tt) (particularly in a GCN>GGN and GTN>GGN context). By separating the trinucleotide context into the positive versus negative transcribed strand, we see differences that are otherwise unexplained by DNA derived mutational signatures, implying artefact either through library prep, sequencing, or RNA editing.
+
+```{r TN by strand, echo=F, warning=F, fig.width=12, fig.cap="\\label{fig:figs} Trinucleotide context of filtered mutations by transcribed strand"}
+tab <- table(filt$strand, filt$trinuc_sub)[1:2,]
+tab <- tab[,match(names(muttype), colnames(tab))]
+tab1 <- tab[,1:96] + tab[2:1,97:192]
+colnames(tab1) <- colnames(tab)[1:96]
+strandBias <- cbind(apply(tab1, 2, function(x) binom.test(x)$p.value), apply(tab1, 2, function(x) which.max(x)))
+strandBias2 <- strandBias
+strandBias2 <- 3-strandBias2[,2]
+strandBias <- cbind("channel"=names(muttype), "sBiasP"=rep(strandBias[,1],2), "strand" = c(strandBias[,2], strandBias2))
+strandBias[,3] <- c("-", "+")[as.numeric(strandBias[,3])]
+filt$sBiasP <- strandBias[match(paste(filt$trinuc_sub, filt$strand), paste(strandBias[,1], strandBias[,3])),2]
+
+layout(matrix(1:2, ncol=1))
+par(mar = c(5,6,1,1))
+	names(tab1) <- mutlist
+	barplot(tab1[1,], col=cols, ylab="No. of mutations", names.arg=names(tab), xlab="", las=2, cex.names=.5,
+              main=paste0("TN context, + strand, n=", sum(tab1[1,])), ylim=c(0,50))
+				  	
+	barplot(tab1[2,], col=cols, ylab="No. of mutations", names.arg=names(tab), xlab="", las=2, cex.names=.5,
+              main=paste0("TN context, - strand, n=", sum(tab1[2,])), ylim=c(0,50))
+```
+
+A striking strand bias is demonstrated that cannot be accounted for by known mutational processes. Given the disparity between transcribed strands, mutations that have arisen with a highly biased context are removed (binomial filter, *p* < 0.005). The difference in the relative height of the removed mutations indicates that the majority of those removed are artefacts.
+
+We finally remove all mutations that are clustered within 4 bases in a given patient
+
+```{r, echo=F}
+filt <- filt[as.numeric(filt$sBiasP) > 0.005 | is.na(as.numeric(filt$sBiasP)),]
+diff <- diff(filt$pos) > 0 & diff(filt$pos) < 5
+diff <- c(diff, FALSE) | c(FALSE, diff)
+filt <- filt[!diff,]
+```
+
+
+## Benchmarking Data
+
+## Other applications
