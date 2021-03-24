@@ -57,7 +57,7 @@ After these steps, we are left with between 40,000 and 300,000 mutations per pat
 
 So far, we have generated a list of putative variant sites, but we are unaware how many variants may have been missed at each loci, and we have no information regarding reference calls at those loci. We therefore run [alleleCount](https://github.com/cancerit/alleleCount) to generate count tables of each base for all cells at every putative patient-specific loci.
 
-The code used to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/FindVariants.txt)
+The code used to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/findVariants.txt)
 
 ### Collation and annotation of counts
 Reference and variant counts were collated for all of the loci called above to create a sparse matrix of counts for cell derived from every patient. In the absence of copy number variants, if an autosomal chromosome posses a true mutation, one expects an approximately equal number of reference and variant calls. The exception is for genes that exhibit a high degree of allelic specific expression, or that typically transcribe a particular allele in concentrated bursts. Alternatively, a high ratio of reference to variant counts in a cell base may imply artifact associated with high depth sequencing/ poorly mapped regions. A binomial filter (**p**<0.05) is therefore applied in each cell, with calls ignored in future analyses if there are significantly higher reference than variant counts.

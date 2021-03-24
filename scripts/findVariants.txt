@@ -1,0 +1,234 @@
+
+################################################################################################################################################################
+### pull the cell barcodes post QC, and their main ("broad") cell lineage
+### we then write an output file for each cellranger lane, detailing which cell barcodes have passed QC in that lane
+files <- list.files("data/", pattern="anno.csv", full.names=T)
+anno <- NULL
+for (file in files) {
+	anno <- rbind(anno, data.frame(read.csv(file, stringsAsFactors=F, row.names=1), "broad"=gsub(".*/","",sub("-anno.csv","",file))))
+}
+anno <- anno[!anno$annotation %in% "Doublet",]
+for (lane in unique(sub("_.*", "",rownames(anno)))) {
+	tmp <- rownames(anno)[grep(lane, rownames(anno))]
+	write.table(tmp, paste0("data/barcodes/",lane, "_barcodes.tsv"), sep="\t", quote=F, col.names=F, row.names=F)}
+################################################################################################################################################################
+
+
+################################################################################################################################################################
+### split and index bam files
+#### code from https://gist.github.com/winni2k to split bam files to individual cells (we shall only use our annotated cells that have passed QC)
+######### VM
+lanes <- list.files("data/bams/")
+lanes <- lanes[grepl("bai", lanes)]
+lanes <- sub(".bam.bai","",lanes)
+mani <- read.delim("data/studyInfo.txt")
+mani <- mani[mani$pdid %in% "PD48545",]
+lanes <- lanes[lanes %in% mani$SampleID]
+run <- paste0("python3 bamWriter.py data/bams/", lanes, ".bam data/barcodes/", lanes, "_barcodes.tsv output/bams/", lanes, "/", lanes, " .")
+write.table(run, paste0("scripts/splitBAMs.sh"), quote=F, col.names=F, row.names=F)
+for (lane in lanes) {dir.create(paste0("output/bams/",lane)) }
+quit(save="no")
+chmod +x scripts/*
+ulimit -n 500000
+cat scripts/splitBAMs.sh | parallel
+
+bams <- list.files("output/bams/", recursive=T)
+write.table(paste0("samtools index output/bams/", bams), paste0("scripts/indexBAMs.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+chmod +x scripts/*
+cat scripts/indexBAMs.sh | parallel
+################################################################################################################################################################
+
+
+################################################################################################################################################################
+#### then do a celltype specific pileup
+R
+runi <- NULL
+for (lane in list.files("output/bams")) {
+	files <- list.files(paste0("output/bams/", lane), full.name=T)
+		runi <- c(runi, paste0("bcftools mpileup -Ou -f data/genome.fa ", files, " | bcftools call -vmO z -o ", sub(".bam", ".vcf", sub("bams", "vcfs", files))))
+	dir.create(paste0("output/vcfs/",lane))
+}
+write.table(runi, paste0("scripts/callBAMs.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+chmod +x scripts/*
+cat scripts/callBAMs.sh | parallel
+################################################################################################################################################################
+
+
+################################################################################################################################################################
+#### index all vcf - need this prior to concatenation
+cd output/vcfs
+R
+files <- list.files(".", pattern=".vcf", recursive=T, full.names=F)
+files <- files[!grepl(".csi", files)]
+files <- files[!file.exists(paste0(files, ".csi"))]   ### only index those not previously indexed
+index <- paste0("bcftools index output/vcfs/", files)
+write.table(index, paste0("../../scripts/indexVCFs.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+cd ../../
+chmod +x scripts/*
+cat scripts/indexVCFs.sh | parallel
+################################################################################################################################################################
+
+################################################################################################################################################################
+#### concatenate vcfs maximum number of files is 1000, so will have to merge in two steps - first by concat, then use R
+cd output/vcfs
+R
+files <- list.files(".", pattern=".vcf", recursive=T, full.names=F)
+files <- paste0("output/vcfs/", files[!grepl(".csi", files)])
+chunk <- function(d) split(d, ceiling(seq_along(d)/1000))
+mani <- read.delim("../../data/studyInfo.txt")
+mani <- mani[mani$SampleID %in% sub("/.*","",sub("output/vcfs/", "", files)),]
+run <- NULL
+for (lane in unique(mani$SampleID)) {
+	subfiles <- files[grep(lane, files)]
+	subfiles <- chunk(subfiles)
+	for (i in 1:length(subfiles)) {
+		run <- c(run, paste0("data/VCFindex/", lane, "_", i, ".txt"))
+		write.table(subfiles[[i]], paste0("../../data/VCFindex/", lane, "_", i, ".txt"), quote=F, col.names=F, row.names=F)
+	}	
+}
+write.table(paste0("bcftools concat -f ", run, " -D -a -o output/mergedVCFs/", sub("data/VCFindex/", "", run)), paste0("../../scripts/concatVCFs.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+cd ../../
+chmod +x scripts/*
+cat scripts/concatVCFs.sh | parallel
+
+#### part II with R
+cd output/mergedVCFs
+R
+files <- list.files(".", pattern=".txt", recursive=T, full.names=F)
+mani <- read.delim("../../data/studyInfo.txt")
+mani <- mani[mani$SampleID %in% sub("_.*", "", files),]
+for (patient in unique(mani$pdid)) {
+	loci<- NULL
+	for (file in files[grep(paste(mani$SampleID[mani$pdid %in% patient], collapse="|"), files)]) {
+		loci <- rbind(loci, read.delim(file, skip=223)[,c(1,2,4,5)])
+		print(file)
+	}
+	for (chr in c(1:22,"X","MT")) {
+		loc <- loci[loci[,1] %in% chr,]
+		loc <- loc[order(loc[,2]),]
+		loc <- loc[!duplicated(loc),]
+		write.table(loc, paste0("../loci/", patient, "_chr", chr, ".txt"), , quote=F, col.names=F, row.names=F, sep="\t")
+		print(paste0(patient, ", chr ", chr, " saved"))
+	}
+}
+quit(save="no")
+
+#### allelecounter (and the data) becomes unweildy for 5-6 million loci for each cell in each patient. Some simple heuristics to reduce the number of locis needed.
+#### first collate all the vcf files by chromosome and patient
+cd output
+R
+files <- list.files("vcfs", pattern=".vcf", recursive=T)
+files <- files[!grepl("csi", files)]
+mani <- read.delim("../data/studyInfo.txt")
+mani <- mani[mani$SampleID %in% sub("/.*", "", files),]
+run=NULL
+for (patient in unique(mani$pdid)) {
+	lanes <- mani$SampleID[mani$pdid %in% patient]
+	subfiles <- files[sub("/.*", "", files) %in% lanes]
+	dir.create(paste0("loci/", patient))
+	for (chr in c(1:22, "X", "MT")) {
+		dir.create(paste0("loci/", patient, "/chr", chr))
+		run <- c(run, paste0("bcftools query  -f \'%CHROM\t%POS\t%REF\t%ALT\n\' -r ", chr, " vcfs/", subfiles, " > loci/", patient, "/chr", chr, "/", sub(".vcf", "", sub(".*/","",subfiles)), ".txt"))
+	}
+}
+write.table(run, paste0("../scripts/queryVCFs.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+chmod +x ../scripts/*
+cat ../scripts/queryVCFs.sh
+
+cd output/loci
+R
+file.empty <- function(filenames) file.info(filenames)$size == 0
+library(data.table)
+for (pt in list.files()) {
+	dir.create(paste0("../mergedLoci/", pt))
+	setwd(pt)
+	print(pt)
+	for (chr in list.files()) {
+		print(chr)
+		setwd(chr)
+		dat <- list()
+		for (file in list.files()) {
+			if (!file.empty(file)) {
+				dat [[file]]<- cbind(read.delim(file, header = FALSE, stringsAsFactors=F), sub(".txt", "", file))
+			}
+		}
+		write.table(data.table::rbindlist(dat), paste0("../../../mergedLoci/", pt, "/mergedVCFs_", chr, ".txt"), quote=F, col.names=F, row.names=F, sep="\t")
+		setwd("../")
+	}
+	setwd("../")
+}
+
+#### then filter. The simplest metrics to filter are unique mutations (we will never call with any certainty a single mutation in the GEX file), and shared mutations between cell types
+cd /output/mergedLoci/PD45816
+R
+key <- read.delim("../../data/cellType.txt", stringsAsFactors=F)
+key$type[key$type %in% c("DC", "MNP", "Mast")] <- "Myeloid"
+key$type[key$type %in% c("Endothelial", "Epithelial", "Fibroblast")] <- "Non-immune"
+for (patient in list.files()) {
+	setwd(patient)
+	for (chr in c(1:22, "X", "MT")) {
+		print(chr)
+		data <- read.table(paste0("mergedVCFs_chr", chr, ".txt"), header=F)
+		dupl <- duplicated(data[,1:4]) | duplicated(data[,1:4], fromLast=T)  #### get all mutations that are present in > 1 cell
+		nonSinglet <- data[dupl,]
+		colnames(nonSinglet)[5] <- "cell"
+		mutype <- merge(nonSinglet , key, by="cell")
+		typec <- table(paste(mutype$V1, mutype$V2, mutype$V3, mutype$V4), mutype$type)
+		spec <- apply(typec, 1, max)/rowSums(typec)
+		typecfiltered <- typec[spec>0.99,]
+		rn <- strsplit(rownames(typecfiltered), " ")
+		rn <- data.frame(matrix(unlist(rn), nrow=length(rn), byrow=T))
+		write.table(rn, paste0("filteredVCFloci", patient, "_chr", chr, ".txt"), quote=F, sep="\t", row.names=F, col.names=F)
+	}
+	setwd("../")
+}
+################################################################################################################################################################
+
+
+################################################################################################################################################################
+#### run allelecounter over the patient specific locis - we will run on the farm - this turns out to be unfeasible to run on all called loci
+#### this is due to the shear number of loci - 5-6 million per patient. Computationally challenging to call this number on 300,000 cells
+#### transfer first
+#### alternatively run for each split cell bam
+R
+mani <- read.delim("../manifests/studyInfo.txt")
+locifiles <- list.files("output/loci/", pattern="filteredVCFloci")
+chunk <- function(d) split(d, ceiling(seq_along(d)/1))
+run=NULL
+secondrun=T
+patients <- unique(mani$pdid)
+patients <- patients[10:12]
+file.empty <- function(filenames) file.info(filenames)$size == 0
+for (patient in patients) {
+	dir.create(paste0("output/alleleCounts/",patient))
+	lanes <- mani$SampleID[mani$pdid %in% patient & mani$SampleName %in% "GEX"]
+	bams <- list.files(paste0("output/bams/", lanes), full.names=T)
+	bams <- bams[!grepl("bai", bams)]
+	#### insert script to see whether script has run
+	if (secondrun == T) {
+		hasrun <- list.files(paste0("output/alleleCounts/", patient))
+		empty <- file.empty(paste0("output/alleleCounts/", patient, "/", hasrun))
+		rerun <- hasrun[empty]
+		bams <- bams[gsub(".*/", "", gsub(".bam", "_ac.tsv", bams)) %in% rerun]
+	}
+	print(paste(patient, length(bams)))
+	
+	ids <- gsub(".*/","",gsub(".bam","",bams))
+	loci <- read.delim(paste0("output/loci/filteredVCFloci", patient, "_chrAll.txt"), header=F)
+	runc <- paste0("/nfs/users/nfs_m/my4/bin/alleleCounter -l output/loci/filteredVCFloci", patient, "_chrAll.txt  -b /lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/", bams, " -o output/alleleCounts/", patient, "/", ids, "_ac.tsv -f 0 -F 0 -x -m 20 -q 200 -r data/genome.fa")
+	runc <- chunk(runc)
+	for (i in 1:length(runc)) {
+		run <- c(run, paste0("bsub -q normal -o output/logs/", patient, "run", i, ".log ", paste0("scripts/ac/runAC", patient, "run", i, ".sh")))
+		write.table(runc[[i]], paste0("scripts/ac/runAC", patient, "run", i, ".sh"), quote=F, col.names=F, row.names=F)
+	}
+}
+write.table(run, paste0("scripts/runAC.sh"), quote=F, col.names=F, row.names=F)
+chmod +x scripts/*
+################################################################################################################################################################
+
+

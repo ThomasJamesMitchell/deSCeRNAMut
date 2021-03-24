@@ -1,0 +1,244 @@
+file.empty <- function(filenames) file.info(filenames)$size == 0
+### libraries
+library(data.table)
+library(Matrix)
+
+patients = list.files()[c(1:7,9)]
+
+for (patient in patients) {
+	loci <- read.delim(paste0("../mergedLoci/filteredVCFloci", patient, "_chrAll.txt"), header=F)
+	acfiles <- list.files(patient, pattern="_ac.tsv")
+	for (chr in c(1:22, "X", "MT")) {
+		print(paste(patient, "chr", chr))
+		locic <- loci[loci$V1 %in% chr,]
+		locic <- locic[!(duplicated(locic$V2) | duplicated(locic$V2, fromLast=T)),]   #### remove locis with multiple possible mutated bases
+		locic <- locic[locic$V3 %in% c("T", "C", "G", "A") & locic$V4 %in% c("T", "C", "G", "A"),]
+		locic <- locic[order(locic$V2),]
+		ref <- list()
+		alt <- list()
+		mat <- NULL
+		for (i in 1:length(acfiles)) {
+			refi <- array(0, nrow(locic))
+			alti <- array(0, nrow(locic))
+			if (!file.empty(paste0(patient, "/", acfiles[i]))) {
+				ac <- read.delim(paste0(patient, "/", acfiles[i]))
+				ac <- ac[ac[,1] %in% chr,]
+				ac <- ac[ac$POS %in% locic$V2,]
+				ac$ref <- locic$V3[match(ac$POS, locic$V2)]
+				ac$alt <- locic$V4[match(ac$POS, locic$V2)]
+				ac$ref <- as.integer(apply(ac, 1, function(x) x[names(x) %in% paste0("Count_", x["ref"])]))
+				ac$alt <- as.integer(apply(ac, 1, function(x) x[names(x) %in% paste0("Count_", x["alt"])]))
+				if (nrow(ac) > 0) {mat <- rbind(mat, cbind(i, match(ac$POS, locic$V2), ac$ref, ac$alt))}
+				}
+		}	
+		ref <- sparseMatrix(i = mat[,1], j = mat[,2], x = mat[,3], dims=c(length(acfiles), nrow(locic)))
+		alt <- sparseMatrix(i = mat[,1], j = mat[,2], x = mat[,4], dims=c(length(acfiles), nrow(locic)))
+
+		writeMM(ref, paste0("../collatedMutTables/", patient, "_refCounts_chr_", chr, ".txt"))
+		writeMM(alt, paste0("../collatedMutTables/", patient, "_altCounts_chr_", chr, ".txt"))
+		write.table(sub("_ac.txt", "", acfiles), paste0("../collatedMutTables/", patient, "_colNames_chr_", chr, ".txt"), quote=F, col.names=F, row.names=F)
+		write.table(locic$V2, paste0("../collatedMutTables/", patient, "_rowNames_chr_", chr, ".txt"), quote=F, col.names=F, row.names=F)
+	}
+}
+################################################################################################################################################################
+
+
+
+################################################################################################################################################################
+### then create data table for each mutation firstly with cell counts for each cell type, then mutcounts for the primary type compared to other types
+cellType <- read.delim("../../data/cellType.txt")
+library("seqinr")
+library("Rsamtools")
+library("GenomicRanges")
+library("Matrix")
+genomeFile = "../../data/genome.fa"
+bases <- c("A", "C", "G", "T")
+mutlist = paste0(rep(rep(bases, times=6), each=4),
+                 rep(c("C", "T"), each=48),
+                 rep(bases, times=24),">",rep(rep(bases, times=6), each=4),
+                 rep(c("A", "G","T","A","C","G"), each=16),
+                 rep(bases, times=24))
+
+oppstrand = function(x) {
+  trin1 = paste(comp(rev(strsplit(substr(x,1,3),"")[[1]]), forceToLower=F), collapse="")
+  trin2 = paste(comp(rev(strsplit(substr(x,5,7),"")[[1]]), forceToLower=F), collapse="")
+  return(sprintf("%s>%s",trin1,trin2))
+}
+mutlist_oppstrand = sapply(mutlist, oppstrand)
+muttype = rep(1:96,2)
+names(muttype) = c(mutlist,mutlist_oppstrand)
+dar <- read.delim("~/mutCalling/data/DARNEDHg19to38.tsv")
+rad <- read.delim("~/mutCalling/data/TABLE1_hg38.txt")
+rad[,1] <- sub("chr", "", rad[,1])
+tcr <- read.delim("../../data/shortMetaLymphoid.txt")
+
+
+tcr <- read.delim("~/data/tcrBarcodes.txt")
+annoFiles <- list.files("../../data/", pattern="anno.csv", full.names=T)
+anno <- NULL
+for (file in annoFiles) {
+	anno <- rbind(anno, data.frame(read.csv(file, stringsAsFactors=F, row.names=1), "broad"=gsub(".*/","",sub("-anno.csv","",file))))
+}
+anno <- anno[!anno$annotation %in% "Doublet",]
+anno$tcr <- tcr$tcr1[match(rownames(anno), rownames(tcr))]
+tclones <- table(tcr[,1])
+tclones <- tclones[tclones>19]
+
+bt <- function(a, b, p = 0.5) {binom.test(a, b, 0.5, alternative=
+                            c("less"), conf.level = 0.95)$p.value}
+
+patients <- unique(substr(list.files(pattern="mutsPrimaryvsOther.txt"),1,7))
+for (patient in patients) {
+	print(patient)
+	loci <- read.delim(paste0("../mergedLoci/filteredVCFloci", patient, "_chrAll.txt"), header=F, stringsAsFactors=F)  #### load in ref file to get ref and alt alleles
+	for (chr in c("MT")) {
+		outTCR <- NULL
+		out <- NULL
+
+		print("Collating mutations for chromosomes:")
+		print(chr)
+		ref = readMM(paste0("../collatedMutTables/", patient, "_refCounts_chr_", chr, ".txt"))
+		alt = readMM(paste0("../collatedMutTables/", patient, "_altCounts_chr_", chr, ".txt"))
+		cn = sub("_ac.tsv", "", read.delim(paste0("../collatedMutTables/", patient, "_colNames_chr_", chr, ".txt"), header=F)[[1]])
+		rn = read.delim(paste0("../collatedMutTables/", patient, "_rowNames_chr_", chr, ".txt"), header=F)[[1]]
+		
+		############### binomial exact to remove heavily biased and deep reads to alternative allele
+		if (!chr %in% "MT") {
+			a <- matrix(0,nrow = nrow(alt), ncol=ncol(alt))
+			r <- matrix(0,nrow = nrow(alt), ncol=ncol(alt))
+			for (i in 1:ncol(alt)) {
+				print(paste(chr, i, "/",ncol(alt)))
+				alti <- alt[,i]
+				refi <- ref[,i]
+				pos <- (alti>0 | refi >0) & (alti<1000 | refi<1000)
+				sig <- mapply(bt, alti[pos], alti[pos]+refi[pos])>0.05
+				a[,i][pos][sig] <- alti[pos][sig]
+				r[,i][pos][sig] <- refi[pos][sig]
+			}
+			alt <- a
+			ref <- r
+		}
+
+		
+		types <- anno$broad[match(cn, rownames(anno))]
+		altCells <- apply(alt, 2, function(x) c(table(types[x>0])))   #### how many cells for each type have a given mutation
+		refCells <- apply(ref, 2, function(x) c(table(types[x>0])))   #### how many cells for each type have the reference call for each location
+		which.main <- apply(altCells, 2, which.max)
+		mutTP <- altCells[cbind(which.main, 1:ncol(altCells))]
+		Ptype <- rownames(altCells)[apply(altCells, 2, which.max)]
+		mutTO <- apply(altCells, 2, sum) - mutTP
+		refTP <- refCells[cbind(which.main, 1:ncol(refCells))]
+		refTO <- apply(refCells, 2, sum) - refTP   ### this is the number of cells outside the mainly mutated type with the reference call
+		locic <- loci[loci$V1 %in% chr,]
+		locic <- locic[!(duplicated(locic$V2) | duplicated(locic$V2, fromLast=T)),]   #### remove locis with multiple possible mutated bases
+		locic <- locic[locic$V3 %in% c("T", "C", "G", "A") & locic$V4 %in% c("T", "C", "G", "A"),]
+		locic <- locic[order(locic$V2),]
+		out <- rbind(out, data.frame(chr, rn, "ref"= locic$V3, "alt" = locic$V4, Ptype, mutTP, mutTO, refTP, refTO, stringsAsFactors=F))
+
+		types <- anno$tcr[match(cn, rownames(anno))]
+		altCells <- apply(alt, 2, function(x) c(table(types[x>0])))   #### how many cells for each type have a given mutation
+		refCells <- apply(ref, 2, function(x) c(table(types[x>0])))   #### how many cells for each type have the reference call for each location
+		which.main <- apply(altCells, 2, which.max)
+		mutCP <- altCells[cbind(which.main, 1:ncol(altCells))]
+		Ptype <- rownames(altCells)[apply(altCells, 2, which.max)]
+		mutCO <- apply(altCells, 2, sum) - mutCP
+		refCP <- refCells[cbind(which.main, 1:ncol(refCells))]
+		refCO <- apply(refCells, 2, sum) - refCP   ### this is the number of cells outside the mainly mutated type with the reference call
+		locic <- loci[loci$V1 %in% chr,]
+		locic <- locic[!(duplicated(locic$V2) | duplicated(locic$V2, fromLast=T)),]   #### remove locis with multiple possible mutated bases
+		locic <- locic[locic$V3 %in% c("T", "C", "G", "A") & locic$V4 %in% c("T", "C", "G", "A"),]
+		locic <- locic[order(locic$V2),]
+	
+		outTCR <- rbind(outTCR, data.frame(chr, rn, "ref"= locic$V3, "alt" = locic$V4, "clono"=Ptype, mutCP, mutCO, refCP, refCO, stringsAsFactors=F))
+	
+	#### add in Fisher's exact
+	print("adding stats, TN context and RNA editing sites")	
+	p1=NULL
+	p2=NULL
+	for (i in 1:nrow(out)) {
+	p1 <- c(p1, fisher.test(matrix(unlist(out[i,c("mutTP", "mutTO", "refTP", "refTO")]), nrow=2))$p.value)
+	p2 <- c(p2, fisher.test(matrix(unlist(outTCR[i,c("mutCP", "mutCO", "refCP", "refCO")]), nrow=2))$p.value)
+	}
+	out <- cbind(out, "pValT"=p1, outTCR[,5:ncol(outTCR)], "pValC"=p2)
+
+	write.table(out, paste0("../mutTables/", patient, "chr",chr, "mutsPrimaryvsOther.txt"), sep="\t", quote=F, row.names=F)
+	
+	colnames(out)[1:5] <- c("chr", "pos", "ref", "mut", "tissue")
+
+	# Annotating the trinucleotide context
+	seqs = scanFa(genomeFile, GRanges(out$chr, IRanges(out$pos-1, out$pos+1)))
+	ref_trinuc = as.vector(seqs)
+	out$trinuc_sub = paste(ref_trinuc, paste(substr(ref_trinuc,1,1), out$mut, substr(ref_trinuc,3,3),sep=""), sep=">")
+	out$channel = muttype[out$trinuc_sub]
+
+	
+	#### add in RNA editing annotation from DARNED and RADAR from the REDIportal
+	out$AtoI <- with(out, paste(chr, pos, sep="_")) %in% with(dar, paste(chrom, coordHg38, sep="_"))
+	out$AtoI <- out$AtoI | with(out, paste(chr, pos, sep="_")) %in% with(rad, paste(Region, Position, sep="_"))
+
+	passedFlag = out$mutTO==0 & out$refTO>0 & out$mutTP > 0 & (out$pValT < 0.05 | out$pValC < 0.05)
+	
+	write.table(out, paste0("../mutTables/", patient, "chr",chr, "mutsPrimaryvsOther.txt"), sep="\t", quote=F, row.names=F)
+	}	
+}
+
+patients <- unique(substr(list.files(pattern="mutsPrimaryvsOther.txt"),1,7))
+for (patient in patients) {
+	out <- NULL
+	for (chr in c(1:22, "X", "MT")) {
+		print(paste(patient, chr))
+		out <- rbind(out, read.delim(paste0("../mutTables/", patient, "chr",chr, "mutsPrimaryvsOther.txt")))		
+	}
+	write.table(out, paste0("../mutTables/", patient, "mutsPrimaryvsOther.txt"), sep="\t", quote=F, row.names=F)
+}
+
+	
+
+
+
+
+
+#### annovar annotation
+for (patient in patients) {
+	out <- read.delim(paste0(patient, "mutsPrimaryvsOther.txt"))
+	write.table(cbind(out[,1:2], out[,2:4]), paste0("../annovar/", patient, "_input.txt"), sep="\t", quote=F, row.names=F)
+}
+
+for patient in PD43824 PD43948 PD44714 PD44966 PD44967 PD45814 PD45815 PD45816 PD47171 PD47172 PD47465 PD47512
+	do
+	perl ~/install/annovar/table_annovar.pl /mnt/mutCalling/output/annovar/${patient}_input.txt ~/install/annovar/humandb/ -buildver hg38 -out $patient -remove -protocol refGene,cytoBand,exac03,avsnp147,dbnsfp30a -operation g,r,f,f,f -nastring . -polish
+done
+
+
+ref <- read.delim("~/install/annovar/humandb/hg38_refGene.txt", header=F)
+for (patient in patients) {
+	print(patient)
+	annov <- read.delim(paste0("../annovar/", patient, ".hg38_multianno.txt"))
+	annov <- annov[-1,]
+	unlist(lapply(apply(annov[30:31,], 1, function(x) strsplit(as.character(x["Gene.refGene"]),";")), function(x) paste0(unique(ref[match(unlist(x), ref[,13]),4]), collapse=" ")))
+	annov$strand <- unlist(lapply(apply(annov, 1, function(x) strsplit(as.character(x["Gene.refGene"]),";")), function(x) paste0(unique(ref[match(unlist(x), ref[,13]),4]), collapse=" ")))
+	annov$strand[annov$strand %in% "- NA"] <- "-"
+	annov$strand[annov$strand %in% "+ NA"] <- "+"
+	annov$strand[annov$strand %in% "NA -"] <- "-"
+	annov$strand[annov$strand %in% "NA +"] <- "+"
+	annov$strand[annov$strand %in% "- +"] <- "+ -"
+	
+	out <- read.delim(paste0(patient, "mutsPrimaryvsOther.txt"))
+	annov <- annov[,c(1:7,9,11,12,20,55)]
+	out <- cbind(out, annov[,6:ncol(annov)])
+	out$enrich <- out$mutTP/(out$mutTP+out$refTP) / (out$mutTO/(out$mutTO+out$refTO))
+
+	write.table(out, paste0(patient, "mutsPrimaryvsOther.txt"), sep="\t", quote=F, row.names=F)
+}
+
+allOut <- NULL
+for (patient in patients) {
+	print(patient)
+	out <- read.delim(paste0(patient, "mutsPrimaryvsOther.txt"))
+	allOut <- rbind(allOut, cbind("patient"=patient, out))
+}
+
+out <- allOut
+
+
+write.table(out, "scRNAmutaAllPts.txt", sep="\t", quote=F, row.names=F)
