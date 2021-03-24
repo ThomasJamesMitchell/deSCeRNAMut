@@ -1,0 +1,94 @@
+out <- read.delim("scRNAmutaAllPts.txt")
+
+enrichp <- out$pValT < 0.0001
+enrichn <- out$enrich > 5 & !is.na(out$enrich)
+exac <- out$ExAC_ALL %in% "." & out$avsnp147 %in% "."
+dupl <- !(duplicated(paste(out$chr, out$pos)) | duplicated(paste(out$chr, out$pos), fromLast=T))
+refC <- out$refTO>20 & out$mutTP>5
+venn <- list("cellType"=which(enrichp & enrichn), "SNP"=which(exac), "donorShared"=which(dupl), "coverage"=which(refC))
+vennn <- list("cellTypeP"=which(!enrichp | !enrichn), "SNP"=which(!exac), "donorShared"=which(!dupl), "coverage"=which(!refC))
+library("ggVennDiagram")
+pdf("signatures/filter1Venn.pdf")
+library(ggvenn)
+ggvenn(venn, fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"), stroke_size = 0.5, set_name_size = 4)
+ggvenn(vennn, fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"), stroke_size = 0.5, set_name_size = 4)
+dev.off()
+filt <- out[enrichp & enrichn  & exac & dupl & refC,]
+
+############################################################################
+#### plot TNCs inital filter
+pdf(paste("signatures/TNsQCcomp.pdf", sep=""), width = 8, height = 6, useDingbats=F)
+layout(matrix(1:2, ncol=1))
+par(mar = c(5,6,1,1))
+tab <-  table(factor(out$channel, levels=1:96))
+names(tab) <- mutlist
+cols <- rep(c("blue", "black", "red", "grey", "green", "pink"), each=16)
+barplot(tab, col=cols, ylab="No. of mutations", names.arg=names(tab), xlab="", las=2, cex.names=.55,
+	main=paste0("Pre-filtering, n=", sum(tab)))
+
+tab1 <-  colSums(tab1)
+names(tab1) <- mutlist
+barplot(tab1, col=cols, ylab="No. of mutations", names.arg=names(tab1), xlab="", las=2, cex.names=.55,
+	main=paste0("Post-filtering, n=", sum(tab1)))
+dev.off()
+############################################################################
+
+
+########## examine strand biases. We need to ignore T to C as these have already been removed!!!!
+############################################################
+tab <- table(filt$strand, filt$trinuc_sub)[1:2,]
+tab <- tab[,match(names(muttype), colnames(tab))]
+tab1 <- tab[,1:96] + tab[2:1,97:192]
+colnames(tab1) <- colnames(tab)[1:96]
+strandBias <- cbind(apply(tab1, 2, function(x) binom.test(x)$p.value), apply(tab1, 2, function(x) which.max(x)))
+strandBias2 <- strandBias
+strandBias2 <- 3-strandBias2[,2]
+strandBias <- cbind("channel"=names(muttype), "sBiasP"=rep(strandBias[,1],2), "strand" = c(strandBias[,2], strandBias2))
+strandBias[,3] <- c("-", "+")[as.numeric(strandBias[,3])]
+filt$sBiasP <- strandBias[match(paste(filt$trinuc_sub, filt$strand), paste(strandBias[,1], strandBias[,3])),2]
+
+
+write.table(filt, "scRNAmutaAllPtsFiltered.txt", sep="\t", quote=F, row.names=F)
+
+
+############################################################################
+#### plot QC TNCs
+# only include sigs that contribute > x %
+pdf(paste("signatures/strandedness.pdf", sep=""), width = 7, height = 5, useDingbats=F)
+layout(matrix(1:2, ncol=1))
+par(mar = c(5,6,1,1))
+		  
+	names(tab1) <- mutlist
+	barplot(tab1[1,], col=cols, ylab="No. of mutations", names.arg=names(tab), xlab="", las=2, cex.names=.36,
+              cex=0.6, cex.lab=0.6, cex.main = 0.6, main=paste0("TN context, + strand, n=", sum(tab1[1,])), ylim=c(0,50))
+				  	
+	barplot(tab1[2,], col=cols, ylab="No. of mutations", names.arg=names(tab), xlab="", las=2, cex.names=.36,
+              cex=0.6, cex.lab=0.6, cex.main = 0.6, main=paste0("TN context, - strand, n=", sum(tab1[2,])), ylim=c(0,50))
+	
+dev.off()
+
+
+	
+filt <- filt[as.numeric(filt$sBiasP) > 0.005 | is.na(as.numeric(filt$sBiasP)),]
+diff <- diff(filt$pos) > 0 & diff(filt$pos) < 5
+diff <- c(diff, FALSE) | c(FALSE, diff)
+filt <- filt[!diff,]
+			  	
+write.table(filt, "scRNAmutaAllPtsFiltered.txt", sep="\t", quote=F, row.names=F)
+
+
+#############################################################################
+##### plot sigs
+tab <-  table(filt$tissue, factor(filt$channel, levels=1:96))
+colnames(tab) <- mutlist
+## 3.  Plotting the trinucleotide context
+cols <- rep(c("blue", "black", "red", "grey", "green", "pink"), each=16)
+# only include sigs that contribute > x %
+pdf(paste("signatures/tissueTNpostFilteringSBias.pdf", sep=""), width = 12, height = 12, useDingbats=F)
+layout(matrix(1:10, ncol=2))
+par(mar = c(5,6,1,1))
+for (type in rownames(tab)) {
+	barplot(tab[type,], col=cols, ylab="No. of mutations", names.arg=colnames(tab), xlab="", las=2, cex.names=.4,
+              main=paste0(type, ", n=", sum(tab[type,])), ylim=c(0,10))	  
+}
+dev.off()

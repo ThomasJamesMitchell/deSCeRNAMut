@@ -167,7 +167,7 @@ par(mar = c(5,6,1,1))
 
 A striking strand bias is demonstrated that cannot be accounted for by known mutational processes. Given the disparity between transcribed strands, mutations that have arisen with a highly biased context are removed (binomial filter, *p* < 0.005). The difference in the relative height of the removed mutations indicates that the majority of those removed are artefacts.
 
-We finally remove all mutations that are clustered within 4 bases in a given patient
+We finally remove all mutations that are clustered within 4 bases in a given patient, to yield the final mutation calls. The code to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/finalFilter.txt)
 
 ```{r, echo=F}
 filt <- filt[as.numeric(filt$sBiasP) > 0.005 | is.na(as.numeric(filt$sBiasP)),]

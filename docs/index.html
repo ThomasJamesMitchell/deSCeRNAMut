@@ -356,7 +356,7 @@ pre code {
 </ul>
 <p>After these steps, we are left with between 40,000 and 300,000 mutations per patient</p>
 <p>So far, we have generated a list of putative variant sites, but we are unaware how many variants may have been missed at each loci, and we have no information regarding reference calls at those loci. We therefore run <a href="https://github.com/cancerit/alleleCount">alleleCount</a> to generate count tables of each base for all cells at every putative patient-specific loci.</p>
-<p>The code used to run the above steps is archived <a href="https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/FindVariants.txt">here</a></p>
+<p>The code used to run the above steps is archived <a href="https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/findVariants.txt">here</a></p>
 </div>
 <div id="collation-and-annotation-of-counts" class="section level3">
 <h3>Collation and annotation of counts</h3>
@@ -714,7 +714,7 @@ pre code {
 </p>
 </div>
 <p>A striking strand bias is demonstrated that cannot be accounted for by known mutational processes. Given the disparity between transcribed strands, mutations that have arisen with a highly biased context are removed (binomial filter, <em>p</em> &lt; 0.005). The difference in the relative height of the removed mutations indicates that the majority of those removed are artefacts.</p>
-<p>We finally remove all mutations that are clustered within 4 bases in a given patient</p>
+<p>We finally remove all mutations that are clustered within 4 bases in a given patient, to yield the final mutation calls. The code to run the above steps is archived <a href="https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/finalFilter.txt">here</a></p>
 </div>
 </div>
 <div id="benchmarking-data" class="section level2">
