@@ -62,7 +62,7 @@ So far, we have generated a list of putative variant sites, but we are unaware h
 The code used to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/findVariants.txt).
 
 ### Collation and annotation of counts
-Reference and variant counts were collated for all of the loci called above to create a sparse matrix of counts for cell derived from every patient. In the absence of copy number variants, if an autosomal chromosome posses a true mutation, one expects an approximately equal number of reference and variant calls. The exception is for genes that exhibit a high degree of allelic specific expression, or that typically transcribe a particular allele in concentrated bursts. Alternatively, a high ratio of reference to variant counts in a cell base may imply artifact associated with high depth sequencing/ poorly mapped regions. A binomial filter (**p**<0.05) is therefore applied in each cell, with calls ignored in future analyses if there are significantly higher reference than variant counts.
+Reference and variant counts were collated for all of the loci called above to create a sparse matrix of counts for cell derived from every patient. In the absence of copy number variants, if an autosomal chromosome posses a true mutation, one expects an approximately equal number of reference and variant calls. The exception is for genes that exhibit a high degree of allelic specific expression, or that typically transcribe a particular allele in concentrated bursts. Alternatively, a high ratio of reference to variant counts in a cell base may imply artifact associated with high depth sequencing/ poorly mapped regions. A binomial filter (*p*<0.05) is therefore applied in each cell, with calls ignored in future analyses if there are significantly higher reference than variant counts.
 
 Each genomic loci is annotated using [ANNOVAR](https://annovar.openbioinformatics.org/en/latest/), the trinucleotide context of the variant, and any loci associated with previously documented RNA editing sites using [DARNED](https://darned.ucc.ie/) and [RADAR](https://github.com/YangLab/RADAR).
 
@@ -113,7 +113,7 @@ filt <- allCalls[enrichp & enrichn  & exac & dupl & refC,]
 
 We can also examine the trinucleotide context of the mutations pre- and post-filtering.
 
-```{r TN initial filter, echo=F, warning=F, fig.width=12, fig.cap="\\label{fig:figs} Trinucleotide context of called mutations pre- and post- filtering"}
+```{r TN initial filter, echo=F, warning=F, fig.width=12, fig.height=7, fig.cap="\\label{fig:figs} Trinucleotide context of called mutations pre- and post- filtering"}
 bases <- c("A", "C", "G", "T")
 mutlist = paste0(rep(rep(bases, times=6), each=4),
                  rep(c("C", "T"), each=48),
@@ -145,7 +145,7 @@ barplot(tab1, col=cols, ylab="No. of mutations", names.arg=names(tab1), xlab="",
 
 Note is made of high levels of mutations that are otherwise unexplained from published catalogues of [mutational signatures](https://cancer.sanger.ac.uk/cosmic/signatures/SBS/index.tt) (particularly in a GCN>GGN and GTN>GGN context). By separating the trinucleotide context into the positive versus negative transcribed strand, we see differences that are otherwise unexplained by DNA derived mutational signatures, implying artifact either through library prep, sequencing, or RNA editing.
 
-```{r TN by strand, echo=F, warning=F, fig.width=12, fig.cap="\\label{fig:figs} Trinucleotide context of filtered mutations by transcribed strand"}
+```{r TN by strand, echo=F, warning=F, fig.width=12, fig.height=7, fig.cap="\\label{fig:figs} Trinucleotide context of filtered mutations by transcribed strand"}
 tab <- table(filt$strand, filt$trinuc_sub)[1:2,]
 tab <- tab[,match(names(muttype), colnames(tab))]
 tab1 <- tab[,1:96] + tab[2:1,97:192]
