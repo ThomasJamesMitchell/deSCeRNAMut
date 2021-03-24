@@ -14,6 +14,7 @@ output: html_document
 knitr::opts_knit$set(echo = FALSE, root.dir="~/renal/main/Results/scRNA/mutCalling")
 library(ggvenn)
 library(seqinr)
+library(RColorBrewer)
 ```
 
 
@@ -178,5 +179,44 @@ filt <- filt[!diff,]
 
 
 ## Benchmarking Data
+### Whole exome sequencing
+Multi-regional whole exome sequencing data has been processed for tumour tissue adjacent to the regions that have undergone single cell RNA sequencing. The exonic mutations may therefore be used as a benchmark to determine the precision and sensitivity of the single cell mutation calling method above. To provide a fair comparison between single cell RNA and bulk exonic DNA mutation calls, and to account for differences in coverage between the methods, we also examine whether there is evidence of a given mutation using the reciprocal technology by performing a pileup at that mutation locus.
+
+We can therefore classify mutations called using the above pipeline as:
+
+* **True positive** - The mutation has been called in both in the scRNAseq pipeline and [CaVEMan](https://github.com/cancerit/CaVEMan).
+* **True positive, pileup only** - The mutation has been called in the scRNAseq pipeline, and there is evidence of the mutation in exome sequencing from tumour regions, with no mutations in the normal sample BAM files. The most common reasons for these mutations not being called by CaVEMan is low coverage or the mutation being called in mitochondrial DNA.
+* **False positive** - The mutation has been called in the scRNAseq pipeline, but there are fewer than 5 supporting reads for the variant base, and more than 20 reads for the reference base in the exome data.
+* **False negative** - The mutation has been called by CaVEMan from the exome data, and has not been called from the scRNAseq data, despite there being adequate coverage of at least 5 cells with the variant and at least 20 cells with the reference base.
+* **Indeterminate** - The mutation has been called by the scRNAseq pipeline, but there is not sufficient depth in the exome data to corroborate the call.
+
+The code used to run the above steps, including the pileup os scRNAseq and whole exome sequencing BAMS is provided [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/benchmarkByWES.txt)
+
+We show the classification of the mutations in the barplots below. The top plot shows all mutations, whereas the lower plot is restricted to exonic only mutations.
+
+```{r, echo=F, fig.height=7}
+finalCalls <- read.delim("scRNAmutaAllPtsFiltered.txt")
+allMuts <- read.delim("allMutsBenchmarkedByWES.txt")
+wesMuts <- read.delim("wesMutsBenchmarkedByWES.txt")
+layout(matrix(c(1,2), nrow = 2, ncol = 1, byrow = TRUE))
+par(bty="n", mar=c(5,4,4,2))
+barplot(t(allMuts), col=brewer.pal(12,"Paired")[c(4,3,6,2,11)],
+        ylab="Number of mutations", las=2, cex.names=0.8, legend = colnames(allMuts), args.legend = list(x = "topleft"), xaxt='n')
+par(bty="n", mar=c(5,4,4,2))
+barplot(t(wesMuts), col=brewer.pal(12,"Paired")[c(4,3,6,2,11)],
+        ylab="Number of exonic mutations", las=2, cex.names=0.8)
+```
+
+It is therefore trivial to compute an average precision and sensitivity of mutation calling, using whole exome sequencing data as the comparator:
+
+```{r summary stats, echo=F}
+am <- colSums(allMuts)
+em <- colSums(wesMuts)
+summary = data.frame(rbind(c((am[1]+am[2])/(am[1]+am[2]+am[3]), (em[1]+em[2])/(em[1]+em[2]+em[3])), c((am[1]+am[2])/(am[1]+am[2]+am[4]), (em[1]+em[2])/(em[1]+em[2]+em[4]))))
+dimnames(summary) <- list(c("Precision", "Sensitivity"), c("All mutations", "Exonic mutations only"))
+knitr::kable(summary, caption = "Precision and sensitivity of scRNAseq pipeline as compared to whole exome sequencing")
+```
+
+### T cell clonotype restriction
 
 ## Other applications

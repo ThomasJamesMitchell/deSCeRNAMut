@@ -1,0 +1,218 @@
+################################################################################################################################################################
+################################################################################################################################################################
+################################################################################################################################################################
+#### alleleCounter to interrogate single cells with WES called loci (after liftover to convert genome assemblies)
+#### 
+R
+mani <- read.delim("../../../manifests/studyInfo.txt")  ## get lane to sample manifest
+mani <- mani[mani$SampleName %in% "GEX" & mani$pass,]
+muts <- read.delim("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/lcm/dna/data/rawCollated.tsv", skip = 121)
+muts <- muts[muts$Type %in% "Sub",]
+runc <- NULL
+lanes <- mani$SampleID
+lanes <- mani$SampleID[mani$pdid %in% c("PD43824", "PD43948")]
+for (lane in lanes) {
+	for(chr in c(1:22,"X","MT")) {
+		patient <- unique(mani$pdid[mani$SampleID %in% lane])
+		loc <- muts[substr(muts$Sample,1,7) %in% patient & muts$Chrom %in% chr,c(5,7:9)]
+		loc <- unique(loc)
+		write.table(loc, paste0("data/", patient, "_chr", chr, "_loci.txt"), quote=F, col.names=F, row.names=F, sep="\t")
+		bam <- paste0("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/rawData/", lane, "/outs/possorted_genome_bam.bam")
+		locil <- paste0("data/", patient, "_chr", chr, "_loci.txt")
+		run <- paste0("/nfs/users/nfs_m/my4/bin/alleleCounter -l ", locil, " -b ", bam, " -o output/", lane, "_chr", chr, "_ac.tsv -f 0 -F 0 -x -m 20 -q 200 -r ../../data/genome.fa")
+		write.table(run, paste0("scripts/lanes/", lane, "_chr", chr, "_runAC.sh"), quote=F, col.names=F, row.names=F)
+		runc <- c(runc, paste0("bsub -q long -o output/logs/", lane, "_chr", chr, "_runAC.log ", paste0("scripts/lanes/", lane, "_chr", chr, "_runAC.sh")))
+	}
+}
+write.table(runc, paste0("scripts/runAC.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+chmod +x scripts/*
+chmod +x scripts/lanes/*
+################################################################################################################################################################
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+################################################################################################################################################################
+#### alleleCounter to interrogate WES bams with single cell called loci (after liftover to convert genome assemblies)
+#### 
+cd /lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/toWES
+R
+setwd("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/toWES")
+mani <- read.delim("../../../manifests/studyInfo.txt")  ## get lane to sample manifest
+mani <- mani[mani$SampleName %in% "GEX" & mani$pass,]
+muts <- read.delim("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/scRNAmutaAllPtsFiltered.txt")
+runc <- NULL
+samples <- list.files("/nfs/cancer_ref01/nst_links/live/2257/")
+for (sample in samples) {
+	patient <- substr(sample, 1, 7)
+	loci <- muts[muts$patient %in% patient,c(2,4:6)]
+	loci <- loci[!is.na(loci[,2]),]
+	if (nrow(loci)>0) {
+		loc <- loci
+		write.table(loc, paste0("data/", patient, "_loci.txt"), quote=F, col.names=F, row.names=F, sep="\t")
+#		bam <- paste0("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/lcm/dna/bams/2257/", sample, "/mapped_sample/",sample,".sample.dupmarked.bam")
+		bam <- paste0("/nfs/cancer_ref01/nst_links/live/2257/", sample, "/",sample,".sample.dupmarked.bam")
+		locil <- paste0("data/", patient, "_loci.txt")
+		run <- paste0("/nfs/users/nfs_m/my4/bin/alleleCounter -l ", locil, " -b ", bam, " -o output/", sample, "_ac.tsv -r /nfs/cancer_ref02/human/GRCh37d5/genome.fa")
+		write.table(run, paste0("scripts/samples/", sample, "_runAC.sh"), quote=F, col.names=F, row.names=F)
+		runc <- c(runc, paste0("bsub -q normal -o output/logs/", sample, "_runAC.log ", paste0("scripts/samples/", sample, "_runAC.sh")))
+	}
+}
+write.table(runc, paste0("scripts/runAC.sh"), quote=F, col.names=F, row.names=F)
+quit(save="no")
+chmod +x scripts/*
+chmod +x scripts/samples/*
+################################################################################################################################################################
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+################################################################################################################################################################
+#### collate interrogated scRNA bams with WES called loci
+#### 
+###### get sc annotation
+R
+setwd("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/fromWES")
+library(Matrix)
+library(RColorBrewer)
+files = list.files("../../../summary/", full.names=T)
+files <- files[grep("anno.csv", files)]
+anno <- NULL
+for (file in files) {
+	anno <- rbind(anno, data.frame(read.csv(file, stringsAsFactors=F, row.names=1), "broad"=gsub(".*/","",sub("-anno.csv","",file))))
+}
+file.empty <- function(filenames) file.info(filenames)$size == 0
+anno <- anno[!anno$annotation %in% "Doublet",]
+#### then get scRNA BAM ac output
+mani <- read.delim("../../../manifests/studyInfo.txt")  ## get lane to sample manifest
+mani <- mani[mani$SampleName %in% "GEX" & mani$pass,]
+muts <- read.delim("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/lcm/dna/data/rawCollated.tsv", skip = 121, stringsAsFactors=F)
+ref <- muts
+lanes <- mani$SampleID
+allptcalls <- NULL
+patients = unique(mani$pdid[mani$SampleID %in% lanes])
+for (patient in patients) {
+	lanes <- mani$SampleID[mani$pdid %in% patient]
+	ptcalls <- NULL
+	for (chr in c(1:22,"X")) {
+		file = paste0("data/", patient, "_chr", chr, "_loci.txt")
+		if (!file.empty(file)) {
+			ac <- read.delim(file, header=F)
+			calls <- matrix(0,nrow=length(unique(ac[,2])),ncol=4)
+			colnames(calls) <- c("mutTP","mutTO","refTP","refTO")
+			rownames(calls) <- unique(ac[,2])
+			for (lane in lanes) {
+				file = paste0("output/", lane, "_chr", chr, "_ac.tsv")
+				if (!file.empty(file)) {
+					ac <- read.delim(file)
+					if (nrow(ac)>0) {
+						ac <- ac[!is.na(ac$Good_depth),]
+						ac$ref <- muts$Ref[match(ac$POS, muts$Pos38)]
+						ac$alt <- muts$Alt[match(ac$POS, muts$Pos38)]
+						ac$ref <- as.numeric(apply(ac, 1, function(x) x[names(x) %in% paste0("Count_", x["ref"])]))
+						ac$alt <- as.numeric(apply(ac, 1, function(x) x[names(x) %in% paste0("Count_", x["alt"])]))
+						ac$type <- anno$broad[match(paste0(lane,"_",ac$Barcode), rownames(anno))]
+						alti <- table(ac$POS,ac$alt>0,ac$type)
+						refi <- table(ac$POS,ac$ref>0,ac$type)
+						if (dim(alti)[2]>1 & dim(alti)[1]>1) {alti <- as.data.frame.matrix(alti[,2,])
+									mutTP <- alti$RCC
+									mutTO <- rowSums(alti)-mutTP
+									calls[names(mutTO), 1:2] <- calls[names(mutTO), 1:2] + cbind(mutTP, mutTO)
+						}
+						if (dim(refi)[2]>1 & dim(refi)[1]>1) {refi <- as.data.frame.matrix(refi[,2,])
+									refTP <- refi$RCC
+									refTO <- rowSums(refi)-refTP
+									calls[names(refTO), 3:4] <- calls[names(refTO), 3:4] + cbind(refTP, refTO)
+						}
+					}
+				}
+			}
+		}
+		ptcalls <- rbind(ptcalls, data.frame("chr"=chr, "pos"=rownames(calls), calls))
+	}
+	allptcalls <- rbind(allptcalls, data.frame("patient"=patient, ptcalls))
+}
+muts <- muts[muts$Type %in% "Sub" & muts$ASMD>=140 & muts$CLPM<1,]
+allptcalls <- allptcalls[allptcalls$pos %in% muts$Pos38,]
+	
+#### to compare strategies if we require at least 20 cells coverage in both the tumour and other cells, and also require at least 5 cells to express the variant base
+WEScalledscCovered <- allptcalls[allptcalls$mutTP + allptcalls$refTP > 20 & allptcalls$mutTP > 5 & allptcalls$mutTO + allptcalls$refTO > 20 ,]
+WEScalledscCovered <- cbind(WEScalledscCovered, "effect"=ref$Effect[match(WEScalledscCovered$pos, ref$Pos38)])
+scCalled <- read.delim("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/scRNAmutaAllPtsFiltered.txt")
+scCalled <- scCalled[scCalled$tissue %in% "RCC" & scCalled$ExAC_ALL %in% "." & scCalled$avsnp147%in%"." & scCalled$mutTP>5,]
+
+setwd("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/toWES")
+file.empty <- function(filenames) file.info(filenames)$size == 0
+patients = substr(list.files("data"),1,7)
+outFiles <- list.files("output", full.names=T, pattern=".tsv")
+ref <- read.delim("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/scRNAmutaAllPtsFiltered.txt")
+scCalledWESCovered <- NULL
+for (patient in patients) {
+	outFilesPt <- outFiles[grep(patient, outFiles)]
+	ac <- NULL
+	for (file in outFilesPt) {
+		if (!file.empty(file)) {
+			if (is.null(ac)) {ac <- read.delim(file)} else {ac[,3:7] <- ac[,3:7] + read.delim(file)[,3:7]}
+		}
+	}
+	if (!is.null(ac)) {
+		ac$ref <- ref$ref[match(ac$POS, ref$pos37)]
+		ac$alt <- ref$mut[match(ac$POS, ref$pos37)]
+		ac$ref <- as.numeric(apply(ac, 1, function(x) x[names(x) %in% paste0("Count_", x["ref"])]))
+		ac$alt <- as.numeric(apply(ac, 1, function(x) x[names(x) %in% paste0("Count_", x["alt"])]))
+	
+		scCalledWESCovered <- rbind(scCalledWESCovered, data.frame("patient"=patient, ac))
+	}
+}
+
+scCalledWESCovered <- scCalledWESCovered[scCalledWESCovered$POS %in% scCalled$pos37,]
+
+scCalledWESCovered$true <- NULL
+scCalledWESCovered$true[scCalledWESCovered$alt > 5 & scCalledWESCovered$POS %in% muts$Pos & scCalledWESCovered$POS %in% scCalled$pos37] <- "tpc"			### this is the number of true positive scRNA de novo called mutations (called by Caveman)						TRUE POS
+scCalledWESCovered$true[scCalledWESCovered$alt > 5 & !scCalledWESCovered$POS %in% muts$Pos & scCalledWESCovered$POS %in% scCalled$pos37] <- "tpnc"			### this is the number of true positive scRNA de novo called mutations (but were not called by Caveman)			TRUE POS
+scCalledWESCovered$true[scCalledWESCovered$alt <= 5 & scCalledWESCovered$ref >= 20 & scCalledWESCovered$POS %in% scCalled$pos37] <- "fp"		### this is the number of likely false positive scRNA de novo called mutations (although some may be private to the scRNA biopsy)		FALSE POS
+scCalledWESCovered$true[scCalledWESCovered$alt <= 5 & scCalledWESCovered$ref < 20 & scCalledWESCovered$POS %in% scCalled$pos37] <- "ind"		### this is the number of scRNA mutations that have insufficient coverage in WES to determine if real									INDET
+fn=as.data.frame(table(WEScalledscCovered$patient[!WEScalledscCovered$pos %in% scCalled$pos]))						### this is the number of Caveman called mutations from WES that are covered but not called by scRNA									FALSE NEG
+
+#WEScalledscCovered[!WEScalledscCovered$pos %in% scCalled$pos,]
+#all <- read.delim("/lustre/scratch116/casm/cgp/users/tjm/mainCSF/scRNA/mutCalling/output/scRNAmutaAllPts.txt")
+#
+#write.table(cbind(scCalledWESCovered, scCalled[match(scCalledWESCovered$POS, scCalled$pos37),]), "../scRNAmutaAllPtsFilteredRCC.txt", quote=F, sep="\t")
+
+
+allMuts <- cbind(as.data.frame.matrix(table(scCalledWESCovered$patient,scCalledWESCovered$true)), fn[1:12,2])
+allMuts <- allMuts[,c(3,4,1,5,2)]
+allMuts <- allMuts[rowSums(allMuts)>0,]
+colnames(allMuts) <- c("True positive, CaVEMan called", "True positive, pileup only", "False positive", "False negative", "Indeterminate")
+
+
+fn=as.data.frame(table(WEScalledscCovered$patient[!WEScalledscCovered$pos %in% scCalled$pos & WEScalledscCovered$pos %in% muts$Pos38[grep("silent|missense|nonsense|stop_lost",muts$Effect)]]))						### this is the number of Caveman called mutations from WES that are covered but not called by scRNA									FALSE NEG
+exo <- scCalledWESCovered[scCalledWESCovered$POS %in% scCalled$pos37[grep("exonic",scCalled$Func.refGene)],]
+wesMuts <- cbind(as.data.frame.matrix(table(exo$patient,exo$true)), fn[1:12,2])
+wesMuts <- wesMuts[,c(3,4,1,5,2)]
+wesMuts <- wesMuts[rowSums(wesMuts)>0,]
+colnames(wesMuts) <- c("True positive, CaVEMan called", "True positive, pileup only", "False positive", "False negative", "Indeterminate")
+
+write.table(allMuts, "../allMutsBenchmarkedByWES.txt", sep="\t", quote=F)
+write.table(wesMuts, "../wesMutsBenchmarkedByWES.txt", sep="\t", quote=F)
+
+pdf("../fromWES/plots/descernaSens2.pdf", height=7, width=10)
+layout(matrix(c(1,2), nrow = 2, ncol = 1, byrow = TRUE))
+par(bty="n", mar=c(5,4,4,2))
+barplot(t(allMuts), col=brewer.pal(12,"Paired")[c(4,3,6,2,11)],
+        ylab="Number of mutations", las=2, cex.names=0.8, legend = colnames(allMuts), xaxt='n')
+par(bty="n", mar=c(5,4,4,2))
+barplot(t(wesMuts), col=brewer.pal(12,"Paired")[c(4,3,6,2,11)],
+        ylab="Number of exonic mutations", las=2, cex.names=0.8)
+dev.off()
+
+am <- colSums(allMuts)
+em <- colSums(wesMuts)
+summary = data.frame(rbind(c((am[1]+am[2])/(am[1]+am[2]+am[3]), (em[1]+em[2])/(em[1]+em[2]+em[3])), c((am[1]+am[2])/(am[1]+am[2]+am[4]), (em[1]+em[2])/(em[1]+em[2]+em[4]))))
+dimnames(summary) <- list(c("Precision", "Sensitivity"), c("All", "Exonic only"))
+
