@@ -20,15 +20,16 @@ library(RColorBrewer)
 
 
 ## Background
-The accurate detection of mutations within single cells from their transcriptomic sequences enables the inference of their clonal relationships. In cancerous tissues, reconstructing the clonal evolution of tumour cells is well established, principally through the genomic sequencing of relatively large numbers of cells. Lineage tracing of single lymphocytes has more recently become routine through 5' sequencing and enrichment of the T and B cell receptors. Determining the clonality of lymphocytes has enabled researchers to infer the degree of clonal expansion (thought principally via neo-epitope antigenic stimulation), and to study how cells mature from naivety through to exhaustion. 
+The accurate detection of mutations within single cells from their transcriptomic sequences enables the inference of their clonal relationships. In cancerous tissues, reconstructing the clonal evolution of tumour cells is well established, principally through the genomic sequencing of relatively large numbers of cells from different tumour regions. Lineage tracing of normal cells is more challenging, however lymphocyte lineage tracing has more recently become routine through single cell 5' RNA sequencing and enrichment of the T and B cell receptors. Determining lymphocyte clonality has enabled researchers to infer the degree of clonal expansion (thought principally via neo-epitope antigenic stimulation), and to study how cells mature from naivety through to exhaustion. 
 
 Methods such as [Souporcell](https://doi.org/10.1038/s41592-020-0820-1) have been developed to genotype single cells from their transcriptomic readouts. Other methods, such as [mgatk](https://doi.org/10.1038/s41587-020-0645-6) have demonstrated the ability to clonally trace single cells through using scATAC-seq and mtDNA mutations.
 
-This methodolgy, which we have termed **deSCeRNAMut** (de novo Single Cell RNA Mutation), aims to accurately detect mutations present in different cell populations within a mixed cellular environment from droplet based single cell RNA sequencing data. The principal challenge is the lack of consistent coverage, and low depth of reads, alongside error-prone sequencing reads. To abrogate these challenges, this method relies upon the vast numbers of cells that can be sequenced through droplet based technologies, and the implausibility of shared post-embryonic mutations between different cell-type lineages. 
+This methodology, which we have termed **deSCeRNAMut** (de novo Single Cell RNA Mutation), aims to accurately detect mutations present in different cell populations within a mixed cellular environment from droplet based single cell RNA sequencing data. The principal challenge is the lack of consistent coverage, and low depth of reads, alongside error-prone sequencing reads. To abrogate these challenges, this method relies upon the vast numbers of cells that can be sequenced through droplet based technologies, and the implausibility of shared post-embryonic mutations between different cell-type lineages.
+
 
 
 ## Method
-To test the method, we use transcriptomes generated using droplet based sequencing from *Stromal and tumour cell evolution in clear cell renal cell carcinoma*. The dataset provides a detailed insight into cellular heterogneity in 12 kidney tumours through multi-regional sequencing, with a large number of cells sequenced across different primary cell lineages.
+To demonstrate this method, we use transcriptomes generated using droplet based sequencing from *Stromal and tumour cell evolution in clear cell renal cell carcinoma*. The dataset provides a detailed insight into cellular heterogneity in 12 kidney tumours through multi-regional sequencing, with a large number of cells sequenced across different primary cell lineages.
 
 ```{r table of lineages, echo=F, warning=F}
 files <- list.files("../GEX/",pattern="anno", full.names = T)
@@ -41,24 +42,24 @@ knitr::kable(table(anno$patient, anno$lineage), caption = "Numbers of cells per 
 ```
 
 
-This page describes an overview for detecting and filtering putative somatic mutations from the above cells. We then benchmark the tumour cell calls by comparison to whole exome sequencing, and T cell calls by comparison to whether they are restricted to acquisition post-thymic selection to specific TCR clonotypes.
+This page describes an overview for detecting and filtering putative somatic mutations from the above cells. We then benchmark the tumour cell calls by comparison to whole exome sequencing, and T cell calls by reference to whether they are restricted to cells with specific TCR clonotypes (i.e. acquired post thymic selection).
 
 
 ### Initial variant calling
 In order to call cell specific mutations, indexed BAM files from the cellranger pipeline were fist split into cell specific BAM files. We borrowed this  [code](https://gist.github.com/winni2k) for the task. Cell specific BAM files were indexed using samtools.
 
-Mutations were initially called using bcftools mpileup. The choice of mutation caller was primarily influenced by the need for high sensitivity calls of variants with few supporting reads, as demonstrated by this useful systematic comparison of single-nucleotide variant callers ([Liu et al](https://doi.org/10.1186/s13059-019-1863-4)).
+Mutations were initially called using bcftools mpileup. The choice of mutation caller was primarily influenced by the need for high sensitivity calls of variants with few supporting reads, as demonstrated by this useful systematic comparison of single-nucleotide variant callers ([Liu et al 2019](https://doi.org/10.1186/s13059-019-1863-4)).
 
 Unsurprisingly, a huge number of mutations were called - with between 800,000 and 4,000,000 mutations called per patient. To facilitate more efficient downstream filtering of putative mutations, we perform the first filter step at this point:
 
 * Remove singlet variants only called in a single cell. The rationale is that is will be exceptionally difficult to accurately determine whether these mutations are real or artifact.  
 * Removal of variants that are shared between the different cell lineages shown in the table above. The vast majority of somatic mutations are acquired post embryonic differentiation, and therefore any true degree of sharing is implausible.
 
-After these steps, we are left with between 40,000 and 300,000 mutations per patient
+After these steps, we are left with between 40,000 and 300,000 mutations per patient.
 
 So far, we have generated a list of putative variant sites, but we are unaware how many variants may have been missed at each loci, and we have no information regarding reference calls at those loci. We therefore run [alleleCount](https://github.com/cancerit/alleleCount) to generate count tables of each base for all cells at every putative patient-specific loci.
 
-The code used to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/findVariants.txt)
+The code used to run the above steps is archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/findVariants.txt).
 
 ### Collation and annotation of counts
 Reference and variant counts were collated for all of the loci called above to create a sparse matrix of counts for cell derived from every patient. In the absence of copy number variants, if an autosomal chromosome posses a true mutation, one expects an approximately equal number of reference and variant calls. The exception is for genes that exhibit a high degree of allelic specific expression, or that typically transcribe a particular allele in concentrated bursts. Alternatively, a high ratio of reference to variant counts in a cell base may imply artifact associated with high depth sequencing/ poorly mapped regions. A binomial filter (**p**<0.05) is therefore applied in each cell, with calls ignored in future analyses if there are significantly higher reference than variant counts.
@@ -67,9 +68,9 @@ Each genomic loci is annotated using [ANNOVAR](https://annovar.openbioinformatic
 
 The number of cells containing either the reference and variant base are collated for:
 
-* The cell lineage with the greatest number of mutations
-* All of the other cell lineages
-* The TCR clonotype with the greatest number of mutations
+* The cell lineage with the greatest number of mutations.
+* All of the other cell lineages.
+* The TCR clonotype with the greatest numb.er of mutations.
 * All other TCR clonotypes
 
 The Fisher's exact test is used to compute whether there are proportionally greater numbers of mutations in the cell lineage/ clonotype with the greatest number of mutations:
@@ -81,13 +82,13 @@ knitr::kable(mat1, caption = "Contingency table of counts for single mutation by
 knitr::kable(mat2, caption = "Contingency table of counts for single mutation by clonotype")
 ```
 
-An enrichment factor is also calculated for each mutation that represents the multiple of the increased prevalence in the predominant cell type compared to all others. The output table looks as such:
+An enrichment factor is also calculated for each mutation that represents the multiple of the increased prevalence in the predominant cell type compared to all others. The top few lines of the output table appears as such:
 
 ```{r All muts table, echo=F, warning=F}
 knitr::kable(head(allCalls), caption = "Top of mutation calls (examples above are the bottom line)")
 ```
 
-The code to run the above steps has been archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/collateCounts.txt)
+The code to run the above steps has been archived [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/collateCounts.txt).
 
 ### Final filter
 We apply the following thresholds to filter all possible mutations
@@ -142,7 +143,7 @@ barplot(tab1, col=cols, ylab="No. of mutations", names.arg=names(tab1), xlab="",
 	main=paste0("Post-filtering, n=", sum(tab1)))
 ```
 
-Note is made of high levels of mutations that are otherwise unexplained from published catalogues of [mutational signatures](https://cancer.sanger.ac.uk/cosmic/signatures/SBS/index.tt) (particularly in a GCN>GGN and GTN>GGN context). By separating the trinucleotide context into the positive versus negative transcribed strand, we see differences that are otherwise unexplained by DNA derived mutational signatures, implying artefact either through library prep, sequencing, or RNA editing.
+Note is made of high levels of mutations that are otherwise unexplained from published catalogues of [mutational signatures](https://cancer.sanger.ac.uk/cosmic/signatures/SBS/index.tt) (particularly in a GCN>GGN and GTN>GGN context). By separating the trinucleotide context into the positive versus negative transcribed strand, we see differences that are otherwise unexplained by DNA derived mutational signatures, implying artifact either through library prep, sequencing, or RNA editing.
 
 ```{r TN by strand, echo=F, warning=F, fig.width=12, fig.cap="\\label{fig:figs} Trinucleotide context of filtered mutations by transcribed strand"}
 tab <- table(filt$strand, filt$trinuc_sub)[1:2,]
@@ -190,7 +191,7 @@ We can therefore classify mutations called using the above pipeline as:
 * **False negative** - The mutation has been called by CaVEMan from the exome data, and has not been called from the scRNAseq data, despite there being adequate coverage of at least 5 cells with the variant and at least 20 cells with the reference base.
 * **Indeterminate** - The mutation has been called by the scRNAseq pipeline, but there is not sufficient depth in the exome data to corroborate the call.
 
-The code used to run the above steps, including the pileup os scRNAseq and whole exome sequencing BAMS is provided [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/benchmarkByWES.txt)
+Note that it is possible that some of the false positive results may be real mutations that simply have not been captured spacially as adjacent tissue was sequenced. Overall, this scenario is unlikely as the majority of mutations are clonal and present throughout the tumour. The code used to run the above steps, including the pileup of scRNAseq and whole exome sequencing BAMS is provided [here](https://github.com/ThomasJamesMitchell/deSCeRNAMut/blob/main/scripts/benchmarkByWES.txt).
 
 We show the classification of the mutations in the barplots below. The top plot shows all mutations, whereas the lower plot is restricted to exonic only mutations.
 
@@ -218,5 +219,13 @@ knitr::kable(summary, caption = "Precision and sensitivity of scRNAseq pipeline 
 ```
 
 ### T cell clonotype restriction
+In adult tumours, one expects a high proportion of somatic mutations in expanded CD8 positive T cells to have been acquired post thymic selection. Most called mutations should therefore be restricted to a single T cell receptor clonotype. By using identical metrics to those used to select mutations across all cell types, we can examine the proportion of CD8 positive T cell mutations that are restricted to a single clonotype. Again, in order to call a mutation, we use thresholds requiring at least 5 cells with the variant in the most prevalent clonotype, with a least 20 cells covering the reference allele in the other clonotypes.
+
+```{r clonotype restriction, echo=F}
+cr = sum(finalCalls$pValC[finalCalls$tissue %in% "TCD8" & finalCalls$mutCP > 5 & finalCalls$refCO > 20]<0.0001) / length(finalCalls$pValC[finalCalls$tissue %in% "TCD8" & finalCalls$mutCP > 5 & finalCalls$refCO > 20])
+names(cr) <- "Proportion of CD8 T-cells whose called mutations are restricted to a single TCR clonotype"
+knitr::kable(cr)
+```
+
 
 ## Other applications
