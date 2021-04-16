@@ -15,6 +15,7 @@ knitr::opts_knit$set(echo = FALSE, root.dir="~/renal/main/Results/scRNA/mutCalli
 library(ggvenn)
 library(seqinr)
 library(RColorBrewer)
+library(DENDRO)
 ```
 
 
@@ -146,6 +147,7 @@ barplot(tab1, col=cols, ylab="No. of mutations", names.arg=names(tab1), xlab="",
 Note is made of high levels of mutations that are otherwise unexplained from published catalogues of [mutational signatures](https://cancer.sanger.ac.uk/cosmic/signatures/SBS/index.tt) (particularly in a GCN>GGN and GTN>GGN context). By separating the trinucleotide context into the positive versus negative transcribed strand, we see differences that are otherwise unexplained by DNA derived mutational signatures, implying artifact either through library prep, sequencing, or RNA editing.
 
 ```{r TN by strand, echo=F, warning=F, fig.width=12, fig.height=7, fig.cap="\\label{fig:figs} Trinucleotide context of filtered mutations by transcribed strand"}
+filt$trinuc_sub <- factor(filt$trinuc_sub, levels=names(muttype))
 tab <- table(filt$strand, filt$trinuc_sub)[1:2,]
 tab <- tab[,match(names(muttype), colnames(tab))]
 tab1 <- tab[,1:96] + tab[2:1,97:192]
@@ -228,4 +230,99 @@ knitr::kable(cr)
 ```
 
 
-## Other applications
+## Applications
+### Inferring the degree of clonal expansion in different cell types
+We sought to investigate whether differences in the numbers of mutations expressed between the cell types present in the tumour micro-environment can be used to infer the degree of clonal expansion. The proportion of cells with one, two, three, or greater than three mutations from the final filtered set above was therefore calculated. To account for the lack of discriminatory power in rarer cell populations, we required at least 100 cells from each cell lineage and patient. As expected, the lineage with the highest number of cells expressing called mutations were the cancerous cells themselves, mainly explained by the known clonal structure of the lineage, but also due to the likelihood of increased tumour burden when compared to the normal cell types.  For similar reasons, all of the normal cell types did not tend to have discernible numbers of cells with more than one called mutation. A surprisingly large number of Myeloid cells express mutations, indicating that a sizable proportion of these cells are clonally related. These are followed by fibroblasts, and CD8 positive T cells (which we know are clonally expanded based on the TCR sequencing results). A very small proportion of CD4 positive T cells expressed mutations, consistent with the low degree of clonality based on TCR analysis. In summary, it seems possible to infer clonality of different cell types from expressed scRNA seq data, and the results are consistent with other sequencing modalities.
+
+```{r no of cells with mutations per lineage, fig.height=7, fig.width=6, warnings=F, echo=F}
+calls <- read.delim("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/cellsAndStatesWithCalledMutations.txt")
+calls$broad <- anno$lineage[match(calls$cell, rownames(anno))]
+out <- NULL
+for (patient in unique(finalCalls$patient)) {
+  for(lineage in unique(finalCalls$tissue)) {
+    fc <- finalCalls[finalCalls$patient %in% patient & finalCalls$tissue %in% lineage,]
+    calli <- calls[calls$patient%in%patient & calls$broad %in% lineage & calls$pos %in% fc$pos,]
+    ncell <- sum(anno$patient %in% patient & anno$lineage %in% lineage)
+    if (ncell > 100) {
+      nmuts <- table(calli$cell)
+      nmuts[nmuts>3] <- ">3"
+      nmuts <- factor(nmuts, levels=c(1:3, ">3"))
+      dat <- table(nmuts)/ncell
+      if (dim(dat)[1]>0) {
+        add = data.frame("patient"=patient, "lineage"=lineage, dat)
+        out <- rbind(out, add)
+      }
+    }
+  }
+}
+out$lineage <- factor(out$lineage, levels=c("RCC","Myeloid","Fibro","TCD8", "Bcell","Endo", "NK", "TCD4", "Epi"))
+p = ggplot(out, aes(x=nmuts, y=Freq, color=patient), na.rm=TRUE) +
+    geom_boxplot(color="black", outlier.shape = NA) +
+    geom_jitter() +
+    theme_classic() +
+    ylim(-0.01,0.4) +
+    labs(x="Number of unique mutations per cell", y="Proportion of cells") +
+    facet_wrap(~lineage)
+suppressWarnings(print(p))
+```
+
+### Estimating the phylogenetic structure of cell types
+We explored whether it might be possible to determine the broad phylogenetic structure of the different cell types. Unfortunately, the small number of called mutations, in combination with the low expression at these loci mean that formal methods to build phylogenetic structure cannot be used. One can look instead at the proportion of cells that express any mutations, and the number of cells that express increasing numbers of mutations to give a very rough account of the structure. These might range from predominantly clonal (RCC cells), through a continuum of clonality, to the polyclonal CD4 positive T cells subsets as depicted in the schematic below. Although it is impossible to estimate the relative length of the branches, or sizes of the expansion, we envisage that may appear similar to that below.\  
+
+```{r exampleNormalPhylognenies, echo=FALSE, fig.cap="Schematic of the phylogenies of trees for the main cell types", out.width = '60%'}
+knitr::include_graphics("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/normalExamplePhylogenies.png")
+```
+\  
+
+### Lineage tracing across cell states
+Mutations expressed by cells across different cell states infer a common progenitor, and allow lineage tracing of cells as they mature from one cell state to another.  Myeloid cells (in particular monocytes and macrophages), lend themselves to this approach as they exhibit significant phenotypic heterogeneity yet also appear to be the most clonal of all of the normal cell types. To assess the relationships between cell states (such as classical/ non-classical monocytes, tissue resident/ tumour-associated macrophages), a distance matrix was calculated, which represents the number of mutations that are expressed in any cell derived from exactly one of the two comparitor states as a fraction of the number of mutations that are present in any cell from either of the two comparitor states:
+
+$$d = (Ac ⋂ B + A ⋂ Bc) / A ⋃ B $$
+
+The distance matrix can be then used to directly show the developmental trajectory of myeloid cells as described in our paper.\  
+```{r myeloid trajectory, echo=FALSE, fig.cap="", out.width = '50%'}
+knitr::include_graphics("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/myeloidPhylogeny.png")
+```
+
+```{r DENDRO, echo=F}
+#DENDRO was unable to construct trees due to the high degree of sparcity of the data. Lets look more closely by hand. We first plot the proportion of cells that harbour a given number of mutations.
+
+mutCountTable <- readRDS("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/mutCountTable.RDS")
+refCountTable <- readRDS("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/refCountTable.RDS")
+depth <- read.delim("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/seqDepthByPatient.txt")
+cat <- NULL
+for (patient in unique(sub("_.*","",names(mutCountTable)))) {
+  ncell <- sum(anno$patient %in% patient)
+  loci <- finalCalls[finalCalls$patient %in% patient, c("chr","pos")]
+  loci <- paste(loci$chr, loci$pos, sep="_")
+  cat <- c(cat, depth[loci,]/ncell)
+}
+cat2 <- depth
+cat2[,1] <- "med"
+cat2[cat<exp(-5),1] <- "low"
+cat2[cat>exp(1),1] <- "high"
+
+for (patient in unique(sub("_.*","",names(mutCountTable)))) {
+  for(lineage in unique(sub(".*_","",names(mutCountTable)))) {
+    mut <- mutCountTable[[paste0(patient, "_", lineage)]]
+    ref <- refCountTable[[paste0(patient, "_", lineage)]]
+    loci <- finalCalls[finalCalls$patient %in% patient & finalCalls$tissue %in% lineage, c("chr","pos")]
+    if (!is.null(nrow(loci))) {
+      loci <- paste(loci$chr, loci$pos, sep="_")
+      mut <- mut[,loci]
+      ref <- ref[,loci]
+
+      if (!is.null(mut)) {
+        if (!is.null(ncol(mut))) {
+          if(ncol(mut)>1) {
+            dat = mut[rowSums(mut) > 0 & rowSums(ref)>0,]
+
+      if (!is.null(dat)) {
+        if (!is.null(ncol(dat))) {
+          if(nrow(dat)>0) {
+   #         heatmap(dat, main=paste(patient, lineage))
+            
+
+    }}}}}}}}}
+
+```
