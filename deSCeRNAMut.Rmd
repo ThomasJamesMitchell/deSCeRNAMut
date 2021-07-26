@@ -35,10 +35,12 @@ To demonstrate this method, we use transcriptomes generated using droplet based 
 ```{r table of lineages, echo=F, warning=F}
 files <- list.files("../GEX/",pattern="anno", full.names = T)
 allCalls <- read.delim("scRNAmutaAllPts.txt")
+tcrData <- read.delim("../TCR/shortMetaLymphoid.txt")
 anno <- NULL
 for (file in files) {
   anno <- rbind(anno, data.frame(read.csv(file, row.names = 1), "lineage"=sub("../GEX/","",sub("-anno.csv","",file))))
 }
+anno$tcr <- tcrData$tcr[match(rownames(anno), rownames(tcrData))]
 knitr::kable(table(anno$patient, anno$lineage), caption = "Numbers of cells per lineage and patient")
 ```
 
@@ -220,13 +222,17 @@ dimnames(summary) <- list(c("Precision", "Sensitivity"), c("All mutations", "Exo
 knitr::kable(summary, caption = "Precision and sensitivity of scRNAseq pipeline as compared to whole exome sequencing")
 ```
 
+
 ### T cell clonotype restriction
 In adult tumours, one expects a high proportion of somatic mutations in expanded CD8 positive T cells to have been acquired post thymic selection. Most called mutations should therefore be restricted to a single T cell receptor clonotype. By using identical metrics to those used to select mutations across all cell types, we can examine the proportion of CD8 positive T cell mutations that are restricted to a single clonotype. Again, in order to call a mutation, we use thresholds requiring at least 5 cells with the variant in the most prevalent clonotype, with a least 20 cells covering the reference allele in the other clonotypes.
 
 ```{r clonotype restriction, echo=F}
-cr = sum(finalCalls$pValC[finalCalls$tissue %in% "TCD8" & finalCalls$mutCP > 5 & finalCalls$refCO > 20]<0.0001) / length(finalCalls$pValC[finalCalls$tissue %in% "TCD8" & finalCalls$mutCP > 5 & finalCalls$refCO > 20])
-names(cr) <- "Proportion of CD8 T-cells whose called mutations are restricted to a single TCR clonotype"
-knitr::kable(cr)
+t8 <- finalCalls[finalCalls$tissue %in% "TCD8",]
+t8 <- t8[!t8$clono %in% "",]       ### remove "" as clonotype
+t8 <- t8[t8$mutCP>5&t8$refCO>20,]  ### same QC metrics as the cell type mutation calling
+out <- table(t8$pValC<0.0001, t8$patient)
+print(paste("overall restricted fraction =", round(sum(out[2,]/sum(out)),2)))
+barplot(out[2:1,], las=2, ylab="Number of mutations", legend.text = c("Restricted","Shared"))
 ```
 
 
@@ -237,6 +243,7 @@ We sought to investigate whether differences in the numbers of mutations express
 ```{r no of cells with mutations per lineage, fig.height=7, fig.width=6, warnings=F, echo=F}
 calls <- read.delim("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/cellsAndStatesWithCalledMutations.txt")
 calls$broad <- anno$lineage[match(calls$cell, rownames(anno))]
+calls$source <- anno$summaryDescription[match(calls$cell, rownames(anno))]
 out <- NULL
 for (patient in unique(finalCalls$patient)) {
   for(lineage in unique(finalCalls$tissue)) {
@@ -272,6 +279,40 @@ We explored whether it might be possible to determine the broad phylogenetic str
 ```{r exampleNormalPhylognenies, echo=FALSE, fig.cap="Schematic of the phylogenies of trees for the main cell types", out.width = '60%'}
 knitr::include_graphics("C:/Users/tjm/Documents/renal/main/Results/scRNA/mutCalling/normalExamplePhylogenies.png")
 ```
+### Using known T cell clonality and population size to determine detection thresholds
+TCR data from our CD8 positive T cells may be used to determine the relationship between the size of a clonal population and the likelihood of a cell expressing any mutations in that cell population. If such a relationship can be established, it may be possible therefore to infer the degree of clonality of other cell populations, where we do not have any prior information to the clonality. Called mutations in CD8 positive T cells are annotated with their TCR clonotype in order to calculate the proportion of cells that express a mutations. We plot the proportion of cells expressing a mutation with clonotype size to determine whether this proportion appears to reach an symptotic limit. 
+```{r T cell clonality and number of mutations called, fig.height=6, fig.width=8, warnings=F, echo=F}
+calls$tcr <- anno$tcr[match(calls$cell, rownames(anno))]
+tcrs = as.data.frame(table(anno$tcr)[table(anno$tcr)>0])
+out <- NULL
+for (tcr in tcrs[,1]) {
+  lineage = "TCD8"
+  fc <- finalCalls[finalCalls$clono %in% tcr & finalCalls$tissue %in% lineage,]
+  calli <- calls[calls$tcr %in% tcr & calls$broad %in% lineage & calls$pos %in% fc$pos,]
+  ncell <- tcrs[tcrs[,1] %in% tcr,2]
+  frac <- length(unique(calli$cell))/ncell
+  patient = unique(anno$patient[anno$tcr%in%tcr])
+  out <- rbind(out, data.frame(tcr, ncell, frac, patient))
+}
+cums <- NULL
+for (n in c(0,sort(unique(out$ncell)))) {
+  cums <- rbind(cums, data.frame(n, "frac"=sum((out$frac*out$ncell)[out$ncell>n])/sum(out$ncell[out$ncell>n])))
+}
+cums <- cums[-nrow(cums):-(nrow(cums)-20),]  ## need more than 20 tcrs to get meaningful mean fraction
+## get asymptote
+window=10
+so = 0
+for (i in 1:(nrow(cums)-window)) {
+  sn <- mean(cums$frac[i:(i+window)])
+  if (sn-so<0.002) {break}
+}
+## plot
+plot(NA, xlim=c(0,311), ylim=c(0,0.12), bty="n", xlab = "Minimum size of clone", ylab="Proportion of cells with expressed mutation")
+abline(h=sn, col="grey", lwd=5)
+points(cums[,1], cums[,2], pch=16)
+
+```
+The proportion of cells with an expressed mutation appears to reach a limit, at a population size of 200 cells reaching approximately 11% of cells that express a somatic mutation. We can sanity check this proportion by comparing to our known clonal renal cancer cells, where a mean proportion of 19% of cells express a mutation. 
 \  
 
 ### Lineage tracing across cell states
